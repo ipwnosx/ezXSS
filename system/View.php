@@ -30,7 +30,7 @@ class View
 
         // Add CSP header to manage
         if (explode('/', path)[1] === 'manage') {
-            header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; font-src fonts.gstatic.com; script-src 'self' 'nonce-csrf'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
+            header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; font-src fonts.gstatic.com; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
         }
     }
 
@@ -147,6 +147,19 @@ class View
     }
 
     /**
+     * Updates multiple conditions in the view template at once
+     *
+     * @param array $conditions Array of condition name => boolean value pairs
+     * @return void
+     */
+    public function renderConditions($conditions)
+    {
+        foreach ($conditions as $condition => $bool) {
+            $this->renderCondition($condition, $bool);
+        }
+    }
+
+    /**
      * Renders a checked checkbox if checked
      * 
      * @param mixed $name The checkbox name
@@ -231,7 +244,7 @@ class View
 
         $this->content = $content;
         $this->renderCondition('userIsAdmin', $this->session('rank') == 7);
-        $this->renderCondition('isLoggedIn', $this->session('rank') > 0);
+        $this->renderCondition('isLoggedIn', $this->session('rank') > 0 || $this->session('rank') == 0);
     }
 
     /**
@@ -268,6 +281,10 @@ class View
      */
     public function getPayload($payload)
     {
+        if (preg_match('/[^A-Za-z0-9._-]/', $payload)) {
+            throw new Exception('403');
+        }
+
         $file = __DIR__ . "/../app/views/payloads/$payload.js";
         if (!is_file($file)) {
             throw new Exception('Payload not found');
@@ -303,7 +320,7 @@ class View
         $content = $template;
         preg_match_all('/{{(.*?)}}/', $template, $matches);
         foreach ($matches[1] as $key => $value) {
-            if (is_object($data->{$matches[1][$key]})) {
+            if (!empty($data->{$matches[1][$key]}) && is_object($data->{$matches[1][$key]})) {
                 $data->{$matches[1][$key]} = json_encode($data->{$matches[1][$key]});
             }
             $content = str_replace(
@@ -413,7 +430,8 @@ class View
      */
     public function fileName()
     {
-        return e(ltrim(path, '/'));
+        $cleanPath = explode('?', explode('&', path)[0])[0];
+        return e(ltrim($cleanPath, '/'));
     }
 
     /**
@@ -427,8 +445,21 @@ class View
         $uriParts = explode('/', path);
 
         // Check current page for reporting pages
-        if ((substr($page, -2) === '*0' || substr($page, -2) === '*1') && isset($uriParts[2]) && $uriParts[2] == 'reports') {
-            if (isset($_GET['archive']) && $_GET['archive'] == '1') {
+        if (($page === 'reports*0' || $page === 'reports*1') && (isset($uriParts[2]) && $uriParts[2] === 'reports')) {
+            if (_GET('archive') == '1') {
+                if (substr($page, -2) === '*0') {
+                    return 'menu-active';
+                }
+            } else {
+                if (substr($page, -2) === '*1') {
+                    return 'menu-active';
+                }
+            }
+        }
+
+        // Check current page for persistent pages
+        if (($page === 'persistent*0' || $page === 'persistent*1') && (isset($uriParts[2]) && $uriParts[2] === 'persistent')) {
+            if (_GET('archive') == '1') {
                 if (substr($page, -2) === '*0') {
                     return 'menu-active';
                 }

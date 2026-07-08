@@ -7,7 +7,7 @@ class Reports extends Controller
      * 
      * @var array
      */
-    private $rows = ['id', 'uri', 'ip', 'referer', 'payload', 'user-agent', 'cookies', 'localstorage', 'sessionstorage', 'dom', 'origin', 'shareid'];
+    private $rows = ['id', 'uri', 'ip', 'referer', 'payload', 'user-agent', 'cookies', 'localstorage', 'sessionstorage', 'dom', 'origin', 'shareid', 'extra'];
 
     /**
      * Redirects to all reports
@@ -42,24 +42,14 @@ class Reports extends Controller
         $this->view->setTitle('Report');
         $this->view->renderTemplate('reports/view');
 
-        $report = $this->model('Report')->getById($id);
-
         // Check report permissions
         if (!is_numeric($id) || !$this->hasReportPermissions($id)) {
             throw new Exception('You dont have permissions to this report');
         }
 
-        // Render all rows
-        if(!empty($report['screenshot'] ?? '')) {
-            $screenshot = strlen($report['screenshot']) === 52 ? '<img class="report-img" src="/assets/img/report-' . e($report['screenshot']) . '.png">' : '<img class="report-img" src="data:image/png;base64,' . e($report['screenshot']) . '">';
-        }
-        $this->view->renderData('screenshot', $screenshot ?? '', true);
-        $this->view->renderData('time', date('F j, Y, g:i a', $report['time']));
-        $this->view->renderData('browser', $this->parseUserAgent($report['user-agent']), true);
+        $report = $this->model('Report')->getById($id);
 
-        foreach ($this->rows as $value) {
-            $this->view->renderData($value, $report[$value]);
-        }
+        $this->renderView($report);
 
         return $this->showContent();
     }
@@ -77,19 +67,68 @@ class Reports extends Controller
 
         $report = $this->model('Report')->getByShareId($id);
 
-        // Render all rows
-        $screenshot = !empty($report['screenshot']) ? '<img src="data:image/png;base64,' . e($report['screenshot']) . '">' : '';
-        $this->view->renderData('screenshot', $screenshot, true);
-        $this->view->renderData('time', date('F j, Y, g:i a', $report['time']));
-        $this->view->renderData('browser', $this->parseUserAgent($report['user-agent']), true);
-
-        foreach ($this->rows as $value) {
-            $this->view->renderData($value, $report[$value]);
-        }
+        $this->renderView($report);
 
         $this->log("Visited shared report page {$id}");
 
         return $this->showContent();
+    }
+
+    /**
+     * Renders the report view
+     * 
+     * @param array $report The report data
+     * @return void
+     */
+    private function renderView($report)
+    {
+        // Render all rows
+        if(!empty($report['screenshot'] ?? '')) {
+            $screenshot = strlen($report['screenshot']) === 52 ? '<img class="report-img" src="/assets/img/report-' . e($report['screenshot']) . '.png">' : '<img class="report-img" src="data:image/png;base64,' . e($report['screenshot']) . '">';
+        }
+        $this->view->renderCondition('hasScreenshot', !empty($screenshot ?? ''));
+        $this->view->renderData('screenshot', $screenshot ?? '', true);
+        $this->view->renderData('time', date('F j, Y, g:i a', $report['time']));
+        $this->view->renderData('browser', parseUserAgent($report['user-agent']), true);
+
+        // Handle extra field display logic
+        $extraData = $report['extra'] ?? '';
+        if(empty($extraData)) {
+            $this->view->renderCondition('isJsonExtra', false);
+            $this->view->renderCondition('isExtra', false);
+        } else {
+            $decodedExtra = json_decode($extraData, true);
+            
+            if(json_last_error() === JSON_ERROR_NONE && (is_array($decodedExtra) || is_object($decodedExtra))) {
+                $this->view->renderCondition('isExtra', false);
+                $this->view->renderCondition('isJsonExtra', true);
+                $extraItems = [];
+                $processItem = function($data, $keyPrefix = '', $depth = 0) use (&$processItem, &$extraItems) {                    
+                    if (is_array($data) || is_object($data)) {
+                        if ($depth > 3) {
+                            $extraItems[] = ['key' => $keyPrefix, 'value' => json_encode($data)];
+                        } else {
+                            foreach ($data as $key => $value) {
+                                $newKey = $keyPrefix === '' ? $key : "{$keyPrefix}.{$key}";
+                                $processItem($value, $newKey, $depth + 1);
+                            }
+                        }
+                    } else {
+                        $extraItems[] = ['key' => $keyPrefix, 'value' => $data];
+                    }
+                };
+                $processItem($decodedExtra);
+                $this->view->renderDataset('extraItems', $extraItems);
+            } else {
+                $this->view->renderCondition('isJsonExtra', false);
+                $this->view->renderCondition('isExtra', true);
+                $this->view->renderData('extra', $extraData);
+            }
+        }
+
+        foreach ($this->rows as $value) {
+            $this->view->renderData($value, $report[$value]);
+        }
     }
 
     /**
@@ -107,7 +146,7 @@ class Reports extends Controller
 
         // Check payload permissions
         $payloadList = $this->payloadList();
-        if (!is_numeric($id) || !in_array(+$id, $payloadList, true)) {
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
             throw new Exception('You dont have permissions to this payload');
         }
 
@@ -117,9 +156,69 @@ class Reports extends Controller
             $name = !$val ? 'All payloads' : $this->model('Payload')->getById($val)['payload'];
             $payloads[] = ['id' => $val, 'name' => ucfirst($name), 'selected' => $val == $id ? 'selected' : ''];
         }
+        if(!in_array($id, $payloadList) && $this->isAdmin()) {
+            $payload = $this->model('Payload')->getById($id);
+            $payloads[] = ['id' => $id, 'name' => ucfirst($payload['payload']), 'selected' => 'selected'];
+        }
         $this->view->renderDataset('payload', $payloads);
 
         return $this->showContent();
+    }
+
+    /**
+     * Returns the data of all reports
+     * 
+     * @return string
+     */ 
+    public function data()
+    {
+        $this->isAPIRequest();
+
+        $id = _JSON('id');
+        $archive = _JSON('archive') === 1 ? 1 : 0;
+
+        // Check payload permissions
+        $payloadList = $this->payloadList();
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
+            return jsonResponse('error', 'Something went wrong');
+        }
+
+        // Checks if requested id is 'all'
+        if (+$id === 0) {
+            if ($this->isAdmin()) {
+                // Show all reports
+                $reports = $this->model('Report')->getAllByArchive($archive);
+            } else {
+                // Show all reports of allowed payloads
+                $reports = [];
+                foreach ($payloadList as $payloadId) {
+                    if ($payloadId !== 0) {
+                        $payload = $this->model('Payload')->getById($payloadId);
+                        $payloadUri = '//' . $payload['payload'];
+                        if (strpos($payload['payload'], '/') === false) {
+                            $payloadUri .= '/%';
+                        }
+                        $reports = array_merge($reports, $this->model('Report')->getAllByPayload($payloadUri, $archive));
+                    }
+                }
+            }
+        } else {
+            // Show reports of payload
+            $payload = $this->model('Payload')->getById($id);
+
+            $payloadUri = '//' . $payload['payload'];
+            if (strpos($payload['payload'], '/') === false) {
+                $payloadUri .= '/%';
+            }
+            $reports = $this->model('Report')->getAllByPayload($payloadUri, $archive);
+        }
+
+        foreach ($reports as $key => $value) {
+            $reports[$key]['browser'] = parseUserAgent($reports[$key]['user-agent']);
+            $reports[$key]['last'] = parseTimestamp($reports[$key]['time'], 'long');
+        }
+
+        return jsonResponse('data', $reports);
     }
 
     /**
@@ -131,16 +230,15 @@ class Reports extends Controller
      */
     public function delete($id)
     {
-        $this->isLoggedInOrExit();
-        $this->validateCsrfToken();
+        $this->isAPIRequest();
 
         if (!$this->hasReportPermissions($id)) {
-            throw new Exception('You dont have permissions to this report');
+            return jsonResponse('error', 'You dont have permissions to this report');
         }
 
         $this->model('Report')->deleteById($id);
 
-        return json_encode(['true']);
+        return jsonResponse('success', 1);
     }
 
     /**
@@ -152,16 +250,15 @@ class Reports extends Controller
      */
     public function archive($id)
     {
-        $this->isLoggedInOrExit();
-        $this->validateCsrfToken();
+        $this->isAPIRequest();
 
         if (!$this->hasReportPermissions($id)) {
-            throw new Exception('You dont have permissions to this report');
+            return jsonResponse('error', 'You dont have permissions to this report');
         }
 
         $this->model('Report')->archiveById($id);
 
-        return json_encode(['true']);
+        return jsonResponse('success', 1);
     }
 
     /**
@@ -178,7 +275,7 @@ class Reports extends Controller
 
         // Get data about report and payloads of user
         $report = $this->model('Report')->getById($id);
-        $user = $this->model('User')->getById($this->session->data('id'));
+        $user = $this->user();
         $payloads = $this->model('Payload')->getAllByUserId($user['id']);
 
         // Check all payloads if it correspondents to report 

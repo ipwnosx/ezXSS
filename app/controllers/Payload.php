@@ -18,6 +18,8 @@ class Payload extends Controller
             redirect('/manage/payload/edit/' . $payloadList[0]);
         }
 
+        $this->view->renderCondition('canCreatePayload', $this->canCreatePayload());
+
         return $this->showContent();
     }
 
@@ -36,45 +38,57 @@ class Payload extends Controller
 
         // Check payload permissions
         $payloadList = $this->payloadList(2);
-        if (!is_numeric($id) || !in_array(+$id, $payloadList, true)) {
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
             throw new Exception('You dont have permissions to this payload');
         }
 
-        if ($this->isPOST()) {
+        if (isPOST()) {
             try {
                 $this->validateCsrfToken();
 
                 // Check if posted data is editing collecting
-                if ($this->getPostValue('collecting') !== null) {
+                if (_POST('settings') !== null) {
                     $this->setCollecting($id);
-                }
 
-                // Check if posted data is editing persistent mode
-                if ($this->getPostValue('persistent') !== null) {
-                    if ($this->model('Setting')->get('persistent') !== '1' && $this->getPostValue('persistent-mode') !== null) {
+                    $this->model('Payload')->set($id, 'customjs', _POST('customjs'));
+                    $this->model('Payload')->set($id, 'customjs2', _POST('customjs2'));
+
+                    // Handle extensions
+                    $extensionsInput = _POST('extensions');
+                    $selectedExtensions = !empty($extensionsInput) ? explode(',', $extensionsInput) : [];
+                    
+                    if (!empty($selectedExtensions)) {
+                        $validExtensionIds = array_column($this->model('Extension')->getAllEnabled(), 'id');
+                        foreach ($selectedExtensions as $extensionId) {
+                            if (!in_array($extensionId, $validExtensionIds)) {
+                                throw new Exception('Invalid extension ID');
+                            }
+                        }
+                    }
+                    
+                    $extensionsValue = empty($selectedExtensions) ? '' : implode(',', $selectedExtensions);
+                    $this->model('Payload')->set($id, 'extensions', $extensionsValue);
+
+                    $persistent = '2' === _POST('method') ? 1 : 0;
+                    if($this->model('Setting')->get('persistent') !== '1' && $persistent === 1) {
                         throw new Exception('Persistent mode is globally disabled by the ezXSS admin');
                     }
-                    $this->model('Payload')->setSingleValue($id, 'persistent', ($this->getPostValue('persistent-mode') !== null) ? 1 : 0);
-                }
-
-                // Check if posted data is editing custom js
-                if ($this->getPostValue('secondary-payload') !== null) {
-                    $this->model('Payload')->setSingleValue($id, 'customjs', $this->getPostValue('customjs'));
+                    $this->model('Payload')->set($id, 'persistent', $persistent);
                 }
 
                 // Check if posted data is editing extracting pages
-                if ($this->getPostValue('extract-pages') !== null) {
-                    $this->setPages($id, $this->getPostValue('path'));
+                if (_POST('extract-pages') !== null) {
+                    $this->setPages($id, _POST('path'));
                 }
 
-                // Check if posted data is editing blacklisted domains
-                if ($this->getPostValue('blacklist-domains') !== null) {
-                    $this->setBlacklist($id, $this->getPostValue('domain'));
+                // Check if posted data is editing denylisted domains
+                if (_POST('blacklist-domains') !== null) {
+                    $this->setList($id, _POST('domain'), 'deny');
                 }
 
-                // Check if posted data is editing whitelisted domains
-                if ($this->getPostValue('whitelist-domains') !== null) {
-                    $this->setWhitelist($id, $this->getPostValue('domain'));
+                // Check if posted data is editing allowlisted domains
+                if (_POST('whitelist-domains') !== null) {
+                    $this->setList($id, _POST('domain'), 'allow');
                 }
 
                 $this->log("Updated payload #{$id} settings");
@@ -88,6 +102,10 @@ class Payload extends Controller
         foreach ($payloadList as $val) {
             $payload = $this->model('Payload')->getById($val);
             $payloads[] = ['id' => $val, 'name' => ucfirst($payload['payload']), 'selected' => $val == $id ? 'selected' : ''];
+        }
+        if(!in_array($id, $payloadList) && $this->isAdmin()) {
+            $payload = $this->model('Payload')->getById($id);
+            $payloads[] = ['id' => $id, 'name' => ucfirst($payload['payload']), 'selected' => 'selected'];
         }
         $this->view->renderDataset('payload', $payloads);
 
@@ -109,11 +127,23 @@ class Payload extends Controller
         $this->view->renderChecked('cScreenshot', $payload['collect_screenshot'] == 1);
         $this->view->renderChecked('cPersistent', $payload['persistent'] == 1);
         $this->view->renderData('customjs', $payload['customjs']);
+        $this->view->renderData('customjs2', $payload['customjs2']);
+        $this->view->renderData('selectedMethod1', $payload['persistent'] == 0 ? 'selected' : '');
+        $this->view->renderData('selectedMethod2', $payload['persistent'] == 1 ? 'selected' : '');
+        $this->view->renderData('selectedSpider0', $payload['spider'] == 0 ? 'selected' : '');
+        $this->view->renderData('selectedSpider1', $payload['spider'] == 1 ? 'selected' : '');
+        $this->view->renderData('selectedSpider2', $payload['spider'] == 2 ? 'selected' : '');
 
         $i = 0;
 
         // Render data set of all pages of payload
         $pages = [];
+        if($payload['spider'] == 1) {
+            $pages[] = ['id' => 'spider', 'value' => '/* (first-level spidering w/ JS Web API)'];
+        } else if($payload['spider'] == 2) {
+            $pages[] = ['id' => 'spider', 'value' => '/* (recursive spidering w/ iFrame)'];
+        }
+
         foreach (explode('~', $payload['pages'] ?? '') as $val) {
             if (!empty($val)) {
                 $pages[] = ['id' => $i++, 'value' => $val];
@@ -142,6 +172,22 @@ class Payload extends Controller
         $this->view->renderDataset('whitelist', $whitelist);
         $this->view->renderCondition('hasWhitelist', count($whitelist) > 0);
 
+        // Load and render extensions
+        $allExtensions = $this->model('Extension')->getAllEnabled();
+        $selectedExtensionIds = !empty($payload['extensions']) ? explode(',', $payload['extensions']) : [];
+        
+        $extensions = [];
+        foreach ($allExtensions as $extension) {
+            $extensions[] = [
+                'id' => $extension['id'],
+                'name' => $extension['name'],
+                'description' => substr($extension['description'], 0, 50) . (strlen($extension['description']) > 50 ? '...' : ''),
+                'checked' => in_array($extension['id'], $selectedExtensionIds) ? 'checked' : ''
+            ];
+        }
+        $this->view->renderDataset('extensions', $extensions);
+        $this->view->renderCondition('canCreatePayload', $this->canCreatePayload());
+
         return $this->showContent();
     }
 
@@ -154,22 +200,18 @@ class Payload extends Controller
      */
     public function removeItem($id)
     {
-        // Set json content type
-        $this->view->setContentType('application/json');
+        $this->isAPIRequest();
 
         try {
-            $this->isLoggedInOrExit();
-            $this->validateCsrfToken();
-
             // Check payload permissions
             $payloadList = $this->payloadList(2);
-            if (!is_numeric($id) || !in_array(+$id, $payloadList, true)) {
+            if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
                 throw new Exception('You dont have permissions to this payload');
             }
 
             $payload = $this->model('Payload')->getById($id);
-            $data = $this->getPostValue('data');
-            $type = $this->getPostValue('type');
+            $data = _JSON('data');
+            $type = _JSON('type');
 
             // Prevent changing anything else then the allowed items
             if (!in_array($type, ['pages', 'blacklist', 'whitelist'])) {
@@ -184,12 +226,45 @@ class Payload extends Controller
             if (strpos($payload[$type], '~' . $data . '~') !== false) {
                 $newString = str_replace('~' . $data . '~', '~', $payload[$type]);
             }
-            $this->model('Payload')->setSingleValue($id, $type, $newString);
+            $this->model('Payload')->set($id, $type, $newString);
 
-            return json_encode([1]);
+            $this->log("Updated payload #{$id} settings");
+            return jsonResponse('success', 1);
         } catch (Exception $e) {
-            return json_encode(['error' => e($e)]);
+            return jsonResponse('error', $e->getMessage());
         }
+    }
+
+    /**
+     * Spiders a payload
+     * 
+     * @param string $id The payload id
+     * @return void
+     */
+    public function spider($id)
+    {
+        $this->isAPIRequest();
+
+        // Check payload permissions
+        $payloadList = $this->payloadList(2);
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
+            jsonResponse('error', 'You dont have permissions to this payload');
+        }
+
+        $method = _JSON('method');
+        $methods = ['0','1','2'];
+        
+        if (!isset($methods[$method])) {
+            jsonResponse('error', 'Invalid spidering method');
+        }
+
+        if($this->model('Setting')->get('spider') !== '1' && $method !== '0') {
+            jsonResponse('error', 'Spidering is globally disabled by the ezXSS admin');
+        }
+
+        $this->model('Payload')->set($id, 'spider', $method);
+        $this->log("Updated payload #{$id} settings");
+        jsonResponse('success', 1);
     }
 
     /**
@@ -203,13 +278,13 @@ class Payload extends Controller
         $options = ['uri', 'ip', 'referer', 'user-agent', 'cookies', 'localstorage', 'sessionstorage', 'dom', 'origin', 'screenshot'];
 
         foreach ($options as $option) {
-            if ($this->getPostValue($option) !== null) {
+            if (_POST($option) !== null) {
                 // Enable collecting item for payload if allowed by admin settings
                 $enable = ($this->model('Setting')->get("collect_{$option}") == 1) ? 1 : 0;
-                $this->model('Payload')->setSingleValue($id, "collect_{$option}", $enable);
+                $this->model('Payload')->set($id, "collect_{$option}", $enable);
             } else {
                 // Disable item
-                $this->model('Payload')->setSingleValue($id, "collect_{$option}", 0);
+                $this->model('Payload')->set($id, "collect_{$option}", 0);
             }
         }
     }
@@ -235,48 +310,112 @@ class Payload extends Controller
         }
 
         $newString = $payload['pages'] . '~' . $path;
-        $this->model('Payload')->setSingleValue($id, 'pages', $newString);
+        $this->model('Payload')->set($id, 'pages', $newString);
     }
 
     /**
-     * Add blacklisted domain to payload list
+     * Add allow/deny listed domain to payload list
      * 
      * @param string $id The payload id
      * @param string $domain The domain to add
+     * @param string $type The type of domain (allow/deny)
      * @throws Exception
      * @return void
      */
-    private function setBlacklist($id, $domain)
+    private function setList($id, $domain, $type)
     {
         $payload = $this->model('Payload')->getById($id);
 
         // Validate domain string
-        if (!preg_match('/^(?:(?:(?!\*)[a-zA-Z\d][a-zA-Z\d\-*]{0,61})?[a-zA-Z\d]\.){0,1}(?!\d+)(?!.*\*\*)[a-zA-Z\d*]{1,63}(?:\.(?:(?:(?!\*)[a-zA-Z\d][a-zA-Z\d\-*]{0,61})?[a-zA-Z\d]\.){0,1}(?!\d+)(?!.*\*\*)[a-zA-Z\d*]{1,63})*$/', $domain)) {
+        if (!preg_match('/^(?!.*\*\*)(?:[a-zA-Z\d*](?:[a-zA-Z\d\-*]{0,61}[a-zA-Z\d*])?\.)*[a-zA-Z\d*](?:[a-zA-Z\d\-*]{0,61}[a-zA-Z\d*])?$/', $domain)) {
             throw new Exception('This does not look like a valid domain');
         }
 
-        $newString = $payload['blacklist'] . '~' . $domain;
-        $this->model('Payload')->setSingleValue($id, 'blacklist', $newString);
+        $type = ($type === 'deny') ? 'blacklist' : 'whitelist';
+
+        $newString = $payload[$type] . '~' . $domain;
+        $this->model('Payload')->set($id, $type, $newString);
     }
 
     /**
-     * Add blacklisted domain to payload list
-     * 
-     * @param string $id The payload id
-     * @param string $domain The domain to add
-     * @throws Exception
-     * @return void
+     * Renders the payload create form and handles creation
+     *
+     * @return string
      */
-    private function setWhitelist($id, $domain)
+    public function create()
     {
-        $payload = $this->model('Payload')->getById($id);
-
-        // Validate domain string
-        if (!preg_match('/^(?:(?:(?!\*)[a-zA-Z\d][a-zA-Z\d\-*]{0,61})?[a-zA-Z\d]\.){0,1}(?!\d+)(?!.*\*\*)[a-zA-Z\d*]{1,63}(?:\.(?:(?:(?!\*)[a-zA-Z\d][a-zA-Z\d\-*]{0,61})?[a-zA-Z\d]\.){0,1}(?!\d+)(?!.*\*\*)[a-zA-Z\d*]{1,63})*$/', $domain)) {
-            throw new Exception('This does not look like a valid domain');
+        $this->isLoggedInOrExit();
+        
+        // Check if user can manage payloads
+        if (!$this->canCreatePayload()) {
+            throw new Exception('You dont have permissions to create payloads');
         }
 
-        $newString = $payload['whitelist'] . '~' . $domain;
-        $this->model('Payload')->setSingleValue($id, 'whitelist', $newString);
+        $this->view->setTitle('Create Payload');
+        $this->view->renderTemplate('payload/create');
+
+        if (isPOST()) {
+            try {
+                $this->validateCsrfToken();
+
+                $payload = strtolower(trim(_POST('payload') ?? ''));
+
+                if (empty($payload)) {
+                    throw new Exception('Payload domain cannot be empty');
+                }
+
+                if (preg_match('/\s/', $payload) || 
+                    preg_match('/[<>"\'\\\\\|\*\?#%&=]/', $payload) || 
+                    preg_match('/[\(\)\[\]\{\}@!]/', $payload) || 
+                    preg_match('/[\x00-\x1F\x7F]/', $payload)) {
+                    throw new Exception('Payload domain contains invalid characters');
+                }
+
+                if (strpos($payload, 'http://') === 0 || strpos($payload, 'https://') === 0) {
+                    throw new Exception('Payload needs to be in format without http://');
+                }
+
+                if (substr($payload, -1) === '/') {
+                    throw new Exception('Payload needs to be in format without trailing slash');
+                }
+
+                if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]?(\.[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]?)*(\.[a-zA-Z]{2,})(\\/.*)?$/', $payload)) {
+                    throw new Exception('Payload domain is in invalid format');
+                }
+
+                if (!$this->model('Payload')->isAvailable($payload)) {
+                    throw new Exception('Payload domain is already in use');
+                }
+
+                $userId = $this->session->data('id');
+                if (!$this->model('Payload')->isDomainAvailable($payload, $userId)) {
+                    throw new Exception('Payload domain conflicts with existing payload');
+                }
+
+                // Create the payload
+                $this->model('Payload')->add($userId, $payload);
+                
+                $this->log("Created new payload {$payload}");
+                
+                // Redirect to edit the new payload
+                $newPayload = $this->model('Payload')->getByPayload($payload);
+                redirect('/manage/payload/edit/' . $newPayload['id']);
+                
+            } catch (Exception $e) {
+                $this->view->renderMessage($e->getMessage());
+            }
+        }
+
+        return $this->showContent();
+    }
+
+    /**
+     * Check if user can create payloads (rank 2 or admin)
+     *
+     * @return boolean
+     */
+    private function canCreatePayload()
+    {
+        return $this->session->data('rank') == 2 || $this->session->data('rank') == 7;
     }
 }

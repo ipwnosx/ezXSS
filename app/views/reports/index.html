@@ -8,7 +8,7 @@
                 <div class="col-lg-12">
                     <div class="view-header">
                         <div class="header-title">
-                            <h3 class="m-b-xs">All reports</h3>
+                            <h3 class="m-b-xs">Reports</h3>
                             <small>The reports page allows you to view, search, share, and delete all of your payload's
                                 reports. Use it to track important data and to share reports with your
                                 stakeholders.</small>
@@ -36,7 +36,7 @@
                         <div class="panel-heading">Information</div>
                         <div class="panel-body">
                             <div class="table-responsive">
-                                <table id="reports" class="table">
+                                <table id="reports" class="table table-striped">
                                     <thead>
                                         <tr>
                                             <th class="report-table-id">
@@ -45,7 +45,7 @@
                                                     <span class="reports-checkbox-custom rectangular"></span>
                                                 </label>
                                             </th>
-                                            <th style="width:3%">ID</th>
+                                            <th>ID</th>
                                             <th>URL</th>
                                             <th>IP</th>
                                             <th>Browser</th>
@@ -57,14 +57,12 @@
 
                                     </tbody>
                                 </table>
+                            </div>
 
-                                <div class="">
-                                    <div class="dataTables_paginate paging_simple_numbers">
-                                        with selected:
-                                        <button class="btn delete-selected">Delete</button>
-                                        <button class="btn archive-selected">Archive</button>
-                                    </div><br>
-                                </div>
+                            <div class="with-bar">
+                                <b>&#x21B3; with selected:</b>
+                                <button class="with-button delete-selected">Delete</button>
+                                <button class="with-button archive-selected">Archive</button>
                             </div>
                         </div>
                     </div>
@@ -79,7 +77,7 @@
                 <div class="modal-header">
                     <button class="close" data-dismiss="modal" type="button">&times;</button>
                     <h3 class="m-b-xs">Share</h3>
-                    <small>Share your reports using a direct link anyone without permissions can view</small>
+                    <small>Share your reports using a direct link anyone without an account can view</small>
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
@@ -95,6 +93,5 @@
     </div>
 </div>
 
-<script src="/assets/js/dataTables/jquery.dataTables.js?v={version[]}"></script>
-<script src="/assets/js/dataTables/bootstrap.dataTables.js?v={version[]}"></script>
+<script src="/assets/js/dataTables/datatables.min.js?v={version[]}"></script>
 <script src="/assets/js/dataTables/init.js?v={version[]}"></script>

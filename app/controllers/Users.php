@@ -7,7 +7,7 @@ class Users extends Controller
      * 
      * @var array
      */
-    public $ranks = [0 => 'Banned', 1 => 'User', 7 => 'Admin'];
+    public $ranks = [0 => 'Banned', 1 => 'User', 2 => 'Pro', 7 => 'Admin'];
 
     /**
      * Constructor that always validates if user is admin or not
@@ -16,7 +16,6 @@ class Users extends Controller
     {
         parent::__construct();
 
-        // Validate if user is admin
         $this->isAdminOrExit();
     }
 
@@ -31,13 +30,13 @@ class Users extends Controller
         $this->view->renderTemplate('users/index');
 
         // Check if request is trying to create user
-        if ($this->isPOST()) {
+        if (isPOST()) {
             try {
                 $this->validateCsrfToken();
 
-                $username = $this->getPostValue('username');
-                $password = $this->getPostValue('password');
-                $rank = intval($this->getPostValue('rank'));
+                $username = _POST('username');
+                $password = _POST('password');
+                $rank = intval(_POST('rank'));
 
                 // Validate rank type
                 if (!isset($this->ranks[$rank])) {
@@ -70,15 +69,15 @@ class Users extends Controller
         $userModel = $this->model('User');
         $user = $userModel->getById($id);
 
-        if ($this->isPOST()) {
+        if (isPOST()) {
             try {
                 $this->validateCsrfToken();
 
                 // Check if posted data is changing alerts
-                if ($this->getPostValue('edit') !== null) {
-                    $username = $this->getPostValue('username');
-                    $password = $this->getPostValue('password');
-                    $rank = intval($this->getPostValue('rank'));
+                if (_POST('edit') !== null) {
+                    $username = _POST('username');
+                    $password = _POST('password');
+                    $rank = intval(_POST('rank'));
 
                     // Check if posted data wants to change password
                     if ($password != '') {
@@ -97,16 +96,19 @@ class Users extends Controller
                     if (!isset($this->ranks[$rank])) {
                         throw new Exception('Invalid rank');
                     }
-                    $userModel->setRank($user['id'], $rank);
-                    $this->log("Eddited user {$username}");
+                    if($user['id'] == $this->session->data('id') && $rank !== 7) {
+                        throw new Exception('You cannot downgrade your own rank');
+                    }
+                    $userModel->set($user['id'], 'rank', $rank);
+                    $this->log("Edited user {$username}");
                     if ($rank == 0) {
                         $this->log("Banned user {$username}");
                     }
                 }
 
                 // Check if posted data is adding payload
-                if ($this->getPostValue('add') !== null) {
-                    $payload = $this->getPostValue('payload');
+                if (_POST('add') !== null) {
+                    $payload = _POST('payload');
 
                     // Validate payload url
                     if (strpos($payload, 'http://') === 0 || strpos($payload, 'https://') === 0 || substr($payload, 0, 1) === '/') {
@@ -126,6 +128,7 @@ class Users extends Controller
         $this->view->renderDataset('payload', $payloads);
         $this->view->renderData('username', $user['username']);
         $this->view->renderData('rankOptions', $this->rankOptions($user['rank']), true);
+        $this->view->renderData('id', $user['id']);
 
         return $this->showContent();
     }
@@ -140,13 +143,13 @@ class Users extends Controller
     public function delete($id)
     {
         $this->view->setTitle('Delete User');
-        $this->view->renderTemplate('users/delete');
+        $this->view->renderTemplate('system/delete');
 
         // Retrieve user by id
-        $user = $this->model('User')->getById($id);
-        $this->view->renderData('username', $user['username']);
+        $user = $this->user($id);
+        $this->view->renderData('name', $user['username']);
 
-        if ($this->isPOST()) {
+        if (isPOST()) {
             $this->validateCsrfToken();
 
             // Prevent deleting own user
@@ -163,6 +166,52 @@ class Users extends Controller
     }
 
     /**
+     * Renders the users content and returns the content.
+     * 
+     * @return string
+     */
+    public function data()
+    {
+        $this->isAPIRequest();
+
+        $users = $this->model('User')->getAll();
+        $allPayloads = $this->model('Payload')->getAll();
+        
+        // Create a map of user IDs to their payloads
+        $userPayloads = [];
+        foreach ($allPayloads as $payload) {
+            if (!isset($userPayloads[$payload['user_id']])) {
+                $userPayloads[$payload['user_id']] = [];
+            }
+            $userPayloads[$payload['user_id']][] = $payload['payload'];
+        }
+
+        foreach ($users as &$user) {
+            // Translate rank id to readable name
+            $user['rank'] = $this->ranks[$user['rank']] ?? '?';
+
+            unset($user['password']);
+            unset($user['secret']);
+            unset($user['notepad']);
+            unset($user['row1']);
+            unset($user['row2']);
+
+            $payloadString = $user['rank'] == 'Admin' ? '*, ' : '';
+            if (isset($userPayloads[$user['id']])) {
+                foreach ($userPayloads[$user['id']] as $payload) {
+                    $payloadString .= $payload . ', ';
+                }
+            }
+            
+            $payloadString = $payloadString === '' ? $payloadString : substr($payloadString, 0, -2);
+            $payloadString = (strlen($payloadString) > 50) ? substr($payloadString, 0, 50) . '...' : $payloadString;
+            $user['payloads'] = $payloadString;
+        }
+
+        return jsonResponse('data', $users);
+    }
+
+    /**
      * Deletes a users payload
      * 
      * @param string $id The payload id
@@ -171,7 +220,7 @@ class Users extends Controller
      */
     public function deletePayload($id)
     {
-        $this->validateCsrfToken();
+        $this->isAPIRequest();
 
         // Check if payload is not default payload
         if (!+$id) {
@@ -184,7 +233,39 @@ class Users extends Controller
 
         $this->log("Deleted payload {$id}");
 
-        return json_encode([1]);
+        return jsonResponse('success', 1);
+    }
+
+    /**
+     * Impersonates a user
+     * 
+     * @param string $id The user id
+     * @throws Exception
+     * @return string
+     */
+    public function impersonate($id)
+    {
+        $this->view->setTitle('Impersonate User');
+        $this->view->renderTemplate('users/impersonate');
+
+        $user = $this->model('User')->getById($id);
+
+        if($user['id'] == $this->session->data('id') || $user['rank'] == 7) {
+            throw new Exception('You cannot impersonate yourself or an other admin');
+        }
+
+        $this->view->renderData('username', $user['username']);
+
+        if (isPOST()) {
+            $this->validateCsrfToken();
+
+            $this->log("Impersonated user {$user['username']} (#{$user['id']})");
+            $this->session->clear();
+            $this->session->create($user);
+            redirect('/manage/dashboard/my');
+        }
+
+        return $this->showContent();
     }
 
     /**

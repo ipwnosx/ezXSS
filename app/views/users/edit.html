@@ -20,10 +20,9 @@
             {message}
 
             <div class="row">
-
                 <div class="col-lg-6">
                     <div class="panel panel-filled">
-                        <div class="panel-heading">Edit User</div>
+                        <div class="panel-heading">Edit user</div>
                         <div class="panel-body">
                             <form class="form" method="post">
                                 <input type=hidden hidden name="csrf" value="{session[csrfToken]}">
@@ -48,7 +47,28 @@
                                 </div>
 
                                 <button type="submit" name="edit" class="btn">Update</button>
+                                <a href="/manage/users/delete/{%data id}" class="btn btn-danger last-time mg-10">Delete user</a>
+                                <a href="/manage/users/impersonate/{%data id}" class="btn btn-info last-time">Impersonate user</a>
                             </form>
+                        </div>
+                    </div>
+                    
+                    <div class="panel panel-filled">
+                        <div class="panel-heading">User logs</div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table id="user-logs" class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>Description</th>
+                                            <th>IP</th>
+                                            <th>Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -66,15 +86,13 @@
                                         platform.</small>
                                     <input class="form-control" id="payload" name="payload" type="text"
                                         placeholder="example.{domain[]}/example">
+                                    <small>When no path is given payload is valid for domain/*</small>
                                 </div>
-                                <p>When no path is given payload is valid for domain/*</p>
                                 <button type="submit" name="add" class="btn">Add</button>
                             </form>
                         </div>
                     </div>
-                </div>
-
-                <div class="col-lg-6">
+                    
                     <div class="panel panel-filled">
                         <div class="panel-heading">Payloads</div>
                         <div class="panel-body">
@@ -82,18 +100,30 @@
                                 <table class="table simple">
                                     <thead>
                                         <tr>
-                                            <th style="width:10%">ID</th>
+                                            <th>Actions</th>
                                             <th>Payload</th>
-                                            <th style="width:10%">Delete</th>
                                         </tr>
                                     </thead>
                                     <tbody id="reports-list">
                                         {%foreach payload}
                                         <tr>
-                                            <td scope="row"><b>{payload->id}</b></td>
+                                            <td>
+                                                <div class="btn-group btn-view" role="group">
+                                                    <a href="/manage/payload/edit/{payload->id}" class="btn pretty-border">Edit</a>
+                                                    <div class="btn-group" role="group">
+                                                        <button type="button" class="btn btn-default dropdown-toggle pretty-border" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+                                                            <span class="caret"></span>
+                                                        </button>
+                                                        <div class="dropdown-backdrop"></div>
+                                                        <ul class="dropdown-menu">
+                                                            <li><a href="/manage/reports/list/{payload->id}">Reports</a></li>
+                                                            <li><a href="/manage/persistent/list/{payload->id}">Sessions</a></li>
+                                                            <li><a class="delete-payload" href="#" data-id="{payload->id}">Delete</a></li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </td>
                                             <td>{payload->payload}</td>
-                                            <td><a method="post"
-                                                    href="/manage/users/deletepayload/{payload->id}">Delete</a></td>
                                         </tr>
                                         {%/foreach}
                                     </tbody>
@@ -106,3 +136,6 @@
         </div>
     </section>
 </div>
+
+<script src="/assets/js/dataTables/datatables.min.js?v={version[]}"></script>
+<script src="/assets/js/dataTables/init.js?v={version[]}"></script>

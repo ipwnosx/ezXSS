@@ -25,30 +25,6 @@ class Payload_model extends Model
     }
 
     /**
-     * Set payload value of single item by id
-     * 
-     * @param int $id The setting id
-     * @param string $column The column name
-     * @param string $value The new value
-     * @throws Exception
-     * @return bool
-     */
-    public function setSingleValue($id, $column, $value)
-    {
-        $database = Database::openConnection();
-
-        $database->prepare("UPDATE $this->table SET `$column` = :value WHERE `id` = :id");
-        $database->bindValue(':value', $value);
-        $database->bindValue(':id', $id);
-
-        if (!$database->execute()) {
-            throw new Exception('Something unexpected went wrong');
-        }
-
-        return true;
-    }
-
-    /**
      * Get all payloads from user by user id
      * 
      * @param int $id The user id
@@ -135,5 +111,43 @@ class Payload_model extends Model
         } else {
             return false;
         }
+    }
+
+    /**
+     * Check if domain conflicts with existing payloads
+     * 
+     * @param mixed $payload The payload url to check
+     * @param int $userId The user ID to check ownership for
+     * @throws Exception
+     * @return mixed
+     */
+    public function isDomainAvailable($payload, $userId)
+    {
+        $database = Database::openConnection();
+        
+        $database->getAll($this->table);
+        $payloads = $database->fetchAll();
+        
+        $payloadParts = explode('/', $payload, 2);
+        $newDomain = $payloadParts[0];
+        $newPath = isset($payloadParts[1]) ? $payloadParts[1] : '';
+        
+        foreach ($payloads as $existing) {
+            $existingParts = explode('/', $existing['payload'], 2);
+            $existingDomain = $existingParts[0];
+            $existingPath = isset($existingParts[1]) ? $existingParts[1] : '';
+            
+            if ($payload === $existing['payload'] ||
+                ($newDomain === $existingDomain && (
+                    $existing['user_id'] != $userId ||
+                    $newPath === $existingPath ||
+                    (empty($newPath) && !empty($existingPath))
+                ))
+            ) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 }

@@ -10,6 +10,9 @@ class Session_model extends Model
     public $table = 'sessions';
     public $table_data = 'sessions_data';
 
+    private $table_columns = ['clientid', 'cookies', 'origin', 'referer', 'payload', 'uri', 'user-agent', 'ip', 'time', 'archive'];
+    private $table_data_columns = ['sessionid', 'dom', 'localstorage', 'sessionstorage', 'console', 'compressed'];
+
     /**
      * Get all sessions
      * 
@@ -18,12 +21,69 @@ class Session_model extends Model
     public function getAll()
     {
         $database = Database::openConnection();
-        $database->prepare("SELECT p.id, p.clientid, p.ip, p.uri, p.payload, p.time, p.origin, p.`user-agent`, last_row.requests FROM $this->table p INNER JOIN ( SELECT MAX(id) as max_id, clientid, COUNT(*) as requests FROM $this->table GROUP BY clientid ) last_row ON p.id = last_row.max_id ORDER BY p.time DESC LIMIT 100000");
+        $database->prepare("SELECT p.id, p.clientid, p.ip, p.uri, p.payload, p.time, p.origin, p.`user-agent`, last_row.requests FROM $this->table p INNER JOIN ( SELECT MAX(id) as max_id, clientid, COUNT(*) as requests FROM $this->table GROUP BY clientid ) last_row ON p.id = last_row.max_id ORDER BY p.time DESC LIMIT :li");
+        $database->bindValue(':li', reportsLimit);
         $database->execute();
 
         $data = $database->fetchAll();
 
         return $data;
+    }
+
+    /**
+     * Get all sessions by archive status
+     * 
+     * @param string $archive Archive status
+     * @return array
+     */
+    public function getAllByArchive($archive)
+    {
+        $database = Database::openConnection();
+        $database->prepare("SELECT p.id, p.clientid, p.ip, p.uri, p.payload, p.time, p.origin, p.`user-agent`, last_row.requests FROM $this->table p INNER JOIN ( SELECT MAX(id) as max_id, clientid, COUNT(*) as requests FROM $this->table WHERE `archive` = :archive GROUP BY clientid ) last_row ON p.id = last_row.max_id WHERE p.`archive` = :archive2 ORDER BY p.time DESC LIMIT :li");
+        $database->bindValue(':archive', $archive);
+        $database->bindValue(':archive2', $archive);
+        $database->bindValue(':li', reportsLimit);
+        $database->execute();
+
+        $data = $database->fetchAll();
+
+        return $data;
+    }
+
+    /**
+     * Set session value of single item by id
+     * 
+     * @param int $id The session id
+     * @param string $column The column name
+     * @param string $value The new value
+     * @throws Exception
+     * @return bool
+     */
+    public function set($id, $column, $value)
+    {
+        if (!in_array($column, $this->table_data_columns) && !in_array($column, $this->table_columns)) {
+            throw new Exception('Invalid column name');
+        }
+
+        $table = in_array($column, $this->table_data_columns) ? $this->table_data : $this->table;
+        $where = $table === $this->table_data ? 'sessionid' : 'id';
+        
+        if ($table === $this->table_data) {
+            if ($this->getCompressStatus() === 1) {
+                $value = empty($value) ? $value : base64_encode(gzdeflate($value, 9));
+            }
+        }
+
+        $database = Database::openConnection();
+        $database->prepare("UPDATE $table SET `$column` = :value WHERE `$where` = :id");
+        $database->bindValue(':value', $value);
+        $database->bindValue(':id', $id);
+
+        if (!$database->execute()) {
+            throw new Exception('Something unexpected went wrong');
+        }
+
+        return true;
     }
 
     /**
@@ -92,14 +152,18 @@ class Session_model extends Model
      * Get session by payload
      * 
      * @param string $payload The payload
+     * @param string $archive Archive status
      * @throws Exception
      * @return array
      */
-    public function getAllByPayload($payload)
+    public function getAllByPayload($payload, $archive = 0)
     {
         $database = Database::openConnection();
-        $database->prepare("SELECT p.id, p.clientid, p.ip, p.uri, p.payload, p.time, p.origin, p.`user-agent`, last_row.requests FROM $this->table p INNER JOIN ( SELECT MAX(id) as max_id, clientid, COUNT(*) as requests FROM $this->table GROUP BY clientid ) last_row ON p.id = last_row.max_id WHERE payload LIKE :payload ORDER BY p.time DESC");
+        $database->prepare("SELECT p.id, p.clientid, p.ip, p.uri, p.payload, p.time, p.origin, p.`user-agent`, last_row.requests FROM $this->table p INNER JOIN ( SELECT MAX(id) as max_id, clientid, COUNT(*) as requests FROM $this->table WHERE payload LIKE :payload AND `archive` = :archive GROUP BY clientid ) last_row ON p.id = last_row.max_id WHERE p.payload LIKE :payload2 AND p.`archive` = :archive2 ORDER BY p.time DESC");
         $database->bindValue(':payload', $payload);
+        $database->bindValue(':payload2', $payload);
+        $database->bindValue(':archive', $archive);
+        $database->bindValue(':archive2', $archive);
 
         if (!$database->execute()) {
             throw new Exception('Something unexpected went wrong');
@@ -206,7 +270,7 @@ class Session_model extends Model
     {
         $database = Database::openConnection();
 
-        $database->prepare("INSERT INTO $this->table (`clientid`, `cookies`, `origin`, `referer`, `uri`, `user-agent`, `ip`, `time`, `payload`) VALUES (:clientid, :cookies, :origin, :referer, :uri, :userAgent, :ip, :time, :payload)");
+        $database->prepare("INSERT INTO $this->table (`clientid`, `cookies`, `origin`, `referer`, `uri`, `user-agent`, `ip`, `time`, `payload`, `archive`) VALUES (:clientid, :cookies, :origin, :referer, :uri, :userAgent, :ip, :time, :payload, 0)");
         $database->bindValue(':clientid', $clientId);
         $database->bindValue(':cookies', $cookies);
         $database->bindValue(':origin', $origin);
@@ -245,57 +309,6 @@ class Session_model extends Model
     }
 
     /**
-     * Set session value of single item by id
-     * 
-     * @param int $id The session id
-     * @param string $column The column name
-     * @param string $value The new value
-     * @throws Exception
-     * @return bool
-     */
-    public function setSingleValue($id, $column, $value)
-    {
-        $database = Database::openConnection();
-
-        $database->prepare("UPDATE $this->table SET `$column` = :value WHERE `id` = :id");
-        $database->bindValue(':value', $value);
-        $database->bindValue(':id', $id);
-
-        if (!$database->execute()) {
-            throw new Exception('Something unexpected went wrong');
-        }
-
-        return true;
-    }
-
-    /**
-     * Set session data value of single item by id
-     * 
-     * @param int $id The session id
-     * @param string $column The column name
-     * @param string $value The new value
-     * @throws Exception
-     * @return bool
-     */
-    public function setSingleDataValue($id, $column, $value)
-    {
-        if ($this->getCompressStatus() === 1) {
-            $value = empty($value) ? $value : base64_encode(gzdeflate($value, 9));
-        }
-
-        $database = Database::openConnection();
-        $database->prepare("UPDATE $this->table_data SET `$column` = :value WHERE `sessionid` = :sessionid");
-        $database->bindValue(':value', $value);
-        $database->bindValue(':sessionid', $id);
-
-        if (!$database->execute()) {
-            throw new Exception('Something unexpected went wrong');
-        }
-
-        return true;
-    }
-
-    /**
      * Delete all by client id
      * 
      * @param string $clientId The client id
@@ -316,6 +329,39 @@ class Session_model extends Model
             $database->bindValue(':sessionid', $session['id']);
             $database->execute();
         }
+    }
+
+    /**
+     * Archive all sessions by client id
+     * 
+     * @param string $clientId The client id
+     * @param string $origin The origin
+     * @throws Exception
+     * @return bool
+     */
+    public function archiveByClientId($clientId, $origin)
+    {
+        $session = $this->getByClientId($clientId, $origin);
+
+        if (empty($session)) {
+            throw new Exception('Session not found');
+        }
+
+        // Get current archive status from the first session
+        $currentArchive = $session['archive'] ?? '0';
+        $newArchive = $currentArchive == '0' ? '1' : '0';
+
+        $database = Database::openConnection();
+        $database->prepare("UPDATE $this->table SET `archive` = :archive WHERE `clientid` = :clientid AND `origin` = :origin");
+        $database->bindValue(':archive', $newArchive);
+        $database->bindValue(':clientid', $clientId);
+        $database->bindValue(':origin', $origin);
+
+        if (!$database->execute()) {
+            throw new Exception('Something unexpected went wrong');
+        }
+
+        return true;
     }
 
     /**

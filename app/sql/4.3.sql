@@ -32,10 +32,12 @@ CREATE TABLE `payloads` (
   `payload` varchar(500) NOT NULL,
   `user_id` int(11) NOT NULL,
   `pages` text,
+  `spider` int(11) NOT NULL DEFAULT '0',
   `persistent` tinyint(1) NOT NULL DEFAULT '0',
   `blacklist` text,
   `whitelist` text,
   `customjs` text,
+  `customjs2` text,
   `collect_uri` tinyint(1) NOT NULL DEFAULT '1',
   `collect_ip` tinyint(1) NOT NULL DEFAULT '1',
   `collect_referer` tinyint(1) NOT NULL DEFAULT '1',
@@ -45,15 +47,16 @@ CREATE TABLE `payloads` (
   `collect_sessionstorage` tinyint(1) NOT NULL DEFAULT '1',
   `collect_dom` tinyint(1) NOT NULL DEFAULT '1',
   `collect_origin` tinyint(1) NOT NULL DEFAULT '1',
-  `collect_screenshot` tinyint(1) NOT NULL DEFAULT '0'
+  `collect_screenshot` tinyint(1) NOT NULL DEFAULT '0',
+  `extensions` varchar(255) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 --
 -- Dumping data for table `payloads`
 --
 
-INSERT INTO `payloads` (`id`, `payload`, `user_id`, `pages`, `blacklist`, `whitelist`, `customjs`, `collect_uri`, `collect_ip`, `collect_referer`, `collect_user-agent`, `collect_cookies`, `collect_localstorage`, `collect_sessionstorage`, `collect_dom`, `collect_origin`, `collect_screenshot`) VALUES
-(1, 'Fallback (default)', 0, '', '', '', '', 1, 1, 1, 1, 1, 1, 1, 1, 1, 0);
+INSERT INTO `payloads` (`id`, `payload`, `user_id`, `pages`, `spider`, `blacklist`, `whitelist`, `customjs`, `customjs2`, `collect_uri`, `collect_ip`, `collect_referer`, `collect_user-agent`, `collect_cookies`, `collect_localstorage`, `collect_sessionstorage`, `collect_dom`, `collect_origin`, `collect_screenshot`, `extensions`) VALUES
+(1, 'Fallback (default)', 0, '', 0, '', '', '', '', 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, '');
 
 -- --------------------------------------------------------
 
@@ -88,6 +91,7 @@ CREATE TABLE `reports_data` (
     `screenshot` longtext,
     `localstorage` longtext,
     `sessionstorage` longtext,
+    `extra` longtext,
     `compressed` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -111,10 +115,10 @@ INSERT INTO `settings` (`id`, `setting`, `value`) VALUES
 (1, 'filter-save', '1'),
 (2, 'filter-alert', '1'),
 (3, 'dompart', '500'),
-(4, 'timezone', 'Europe/Amsterdam'),
+(4, 'timezone', 'UTC'),
 (5, 'customjs', ''),
 (7, 'notepad', 'Welcome to ezXSS 4!'),
-(8, 'version', '4.2'),
+(8, 'version', '4.3'),
 (9, 'killswitch', ''),
 (10, 'collect_uri', '1'),
 (11, 'collect_ip', '1'),
@@ -134,9 +138,12 @@ INSERT INTO `settings` (`id`, `setting`, `value`) VALUES
 (25, 'alert-slack', '1'),
 (26, 'alert-discord', '1'),
 (27, 'logging', '0'),
-(28, 'persistent', '0'),
+(28, 'persistent', '1'),
 (29, 'storescreenshot', '0'),
-(30, 'compress', '0');
+(30, 'compress', '0'),
+(31, 'customjs2', ''),
+(32, 'spider', '1'),
+(33, 'extensions', '');
 
 -- --------------------------------------------------------
 
@@ -175,7 +182,8 @@ CREATE TABLE `sessions` (
   `time` int(11) DEFAULT NULL,
   `localstorage` longtext,
   `sessionstorage` longtext,
-  `console` longtext
+  `console` longtext,
+  `archive` int(11) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
@@ -222,6 +230,23 @@ CREATE TABLE `console` (
   `command` text NOT NULL,
   `executed` decimal(10,0) NOT NULL DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `extensions`
+--
+
+CREATE TABLE `extensions` (
+  `id` int(11) NOT NULL,
+  `name` varchar(35) NOT NULL,
+  `description` varchar(250) NOT NULL,
+  `version` varchar(15) NOT NULL,
+  `author` varchar(50) NOT NULL,
+  `source` varchar(250) NOT NULL,
+  `code` mediumtext NOT NULL,
+  `enabled` int(11) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Indexes for dumped tables
@@ -288,6 +313,14 @@ ALTER TABLE `console`
   ADD PRIMARY KEY (`id`);
 
 --
+-- Indexes for table `extensions`
+--
+ALTER TABLE `extensions`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `source` (`source`),
+  ADD KEY `enabled` (`enabled`);
+
+--
 -- AUTO_INCREMENT for dumped tables
 --
 
@@ -345,6 +378,12 @@ COMMIT;
 ALTER TABLE `console`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
 COMMIT;
+--
+-- AUTO_INCREMENT for table `extensions`
+--
+ALTER TABLE `extensions`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
+COMMIT;
 
 --
 -- INDEX for tables
@@ -360,4 +399,11 @@ ALTER TABLE sessions ADD INDEX(id);
 ALTER TABLE sessions ADD INDEX(payload);
 ALTER TABLE sessions ADD INDEX(clientid);
 ALTER TABLE sessions ADD INDEX(origin);
+ALTER TABLE sessions ADD INDEX(archive);
 ALTER TABLE sessions_data ADD INDEX(sessionid);
+
+ALTER TABLE logs ADD INDEX(user_id);
+
+ALTER TABLE `alerts` ADD INDEX(`user_id`);
+ALTER TABLE `alerts` ADD INDEX(`enabled`);
+ALTER TABLE `alerts` ADD INDEX(`method_id`);
